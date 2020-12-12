@@ -95,7 +95,8 @@ def resnet_fpn_backbone(
     # backbone = resnet.__dict__[backbone_name](
     #     pretrained=pretrained,
     #     norm_layer=norm_layer)
-    backbone = resnest50(pretrained)
+    backbone = resnest50(pretrained,
+                          norm_layer=norm_layer)
 
     # select layers that wont be frozen
     assert trainable_layers <= 5 and trainable_layers >= 0
@@ -126,9 +127,11 @@ class Context_FRCNN(nn.Module):
                use_long_term_attention=True, use_self_attention=False, self_attention_in_sequence=False, 
                num_attention_heads=1, num_attention_layers=1):
     super(Context_FRCNN, self).__init__()
-    self.backbone = resnet_fpn_backbone(backbone, pretrained_backbone, trainable_layers=trainable_backbone_layers)
-    self.out_channels = self.backbone.out_channels
-    self.FasterRCNN = FasterRCNN(self.backbone, num_classes, rpn_post_nms_top_n_test=512) # change so same feats in train and eval
+    backbone = resnet_fpn_backbone(backbone, pretrained_backbone, trainable_layers=trainable_backbone_layers)
+    self.out_channels = backbone.out_channels
+    self.FasterRCNN = FasterRCNN(backbone, num_classes, rpn_post_nms_top_n_test=512) # change so same feats in train and eval
+
+    self._maxpool_layer = nn.MaxPool2d((1,1), stride=1)
 
     # Context RCNN parameters
     self.attention_post_rpn = attention_post_rpn
@@ -139,8 +142,6 @@ class Context_FRCNN(nn.Module):
     self.use_self_attention = use_self_attention
     self.num_attention_heads = num_attention_heads
     self.num_attention_layers = num_attention_layers
-
-    self._maxpool_layer = nn.MaxPool2d((1,1), stride=1)
 
     # Attention Blocks
     self.attention_bottleneck_dimension=self.out_channels + 4 # amount of context features
