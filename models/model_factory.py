@@ -1,98 +1,399 @@
+import numpy as np
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.jit.annotations import Tuple, List
 
-import timm
-from pytorchcv.model_provider import get_model
+os.system("pip install resnest -q --pre")
+from resnest.torch import resnest50
 
-from torch.nn.parameter import Parameter
+from torchvision_modified.models.detection import FasterRCNN
+from torchvision_modified.models.detection.backbone_utils import BackboneWithFPN
+from torchvision_modified.ops import misc as misc_nn_ops
+from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
+from torchvision_modified.models import resnet
 
+def update_loss_dict(losses, new):
+  keys = list(losses.keys())
+  sums = [i+list(new.values())[j] for j,i in enumerate(list(losses.values()))]
+  loss = {k: v for k,v in zip(keys,sums)}
+  return loss
 
-def gem(x, p=3, eps=1e-6):
-    return F.avg_pool2d(x.clamp(min=eps).pow(p), (x.size(-2), x.size(-1))).pow(1./p)
+def embed_position_and_size(box):
+  """Encodes the bounding box of the object of interest.
 
+  Takes a bounding box and encodes it into a normalized embedding of shape 
+  [4] - the center point (x,y) and width and height of the box.
 
-class GeM(nn.Module):
-    def __init__(self, p=3, eps=1e-6):
-        super(GeM, self).__init__()
-        self.p = Parameter(torch.ones(1)*p)
-        self.eps = eps
+  Args:
+    box: A bounding box, formatted as [ymin, xmin, ymax, xmax].
 
-    def forward(self, x):
-        return gem(x, p=self.p, eps=self.eps)
+  Returns:
+    A numpy float32 embedding of shape [4].
+  """
+  ymin = box[0]
+  xmin = box[1]
+  ymax = box[2]
+  xmax = box[3]
+  w = xmax - xmin
+  h = ymax - ymin
+  x = xmin + w / 2.0
+  y = ymin + h / 2.0
+  return [x, y, w, h]
 
-    def __repr__(self):
-        return self.__class__.__name__ + '(' + 'p=' + '{:.4f}'.format(self.p.data.tolist()[0]) + ', ' + 'eps=' + str(self.eps) + ')'
+def compute_valid_mask(num_valid_elements, num_elements):
+    """Computes mask of valid entries within padded context feature.
+    Args:
+      num_valid_elements: A int32 Tensor of shape [batch_size].
+      num_elements: An int32 Tensor.
+    Returns:
+      A boolean Tensor of the shape [batch_size, num_elements]. True means
+        valid and False means invalid.
+    """
+    batch_size = num_valid_elements.shape[0]
+    element_idxs = torch.arange(0, num_elements, dtype=torch.int32)
+    # batch_element_idxs = torch.tile(element_idxs.unsqueeze(0), (batch_size, 1))
+    batch_element_idxs = element_idxs.repeat(batch_size).reshape(batch_size,-1).cuda()
+    num_valid_elements = num_valid_elements.unsqueeze(-1)
+    valid_mask = torch.less(batch_element_idxs, num_valid_elements)
+    return valid_mask
 
-class Pooling(nn.Module):
-  def __init__(self):
-    super(Pooling, self).__init__()
+_NEGATIVE_PADDING_VALUE = -100000
+def filter_weight_value(weights, values, valid_mask):
+  w_batch_size, _, w_context_size = weights.shape
+  v_batch_size, v_context_size, _ = values.shape
+  m_batch_size, m_context_size = valid_mask.shape
+
+  valid_mask = valid_mask.unsqueeze(-1)
+
+  # Force the invalid weights to be very negative so it won't contribute to
+  # the softmax.
+  # weight = torch.logical_not(valid_mask).type(weights.dtype) * _NEGATIVE_PADDING_VALUE
+  # weights += torch.transpose(weight, 1, 2)
+
+  very_negative_mask = torch.ones(weights.shape, dtype=weights.dtype).cuda() * _NEGATIVE_PADDING_VALUE
+  # valid_weight_mask = torch.tile(torch.transpose(valid_mask, 1, 2),
+  #                             (1, weights.shape[1], 1))
+  valid_weight_mask = torch.transpose(valid_mask, 1, 2).repeat(1,weights.shape[1],1)
+  weights = torch.where(valid_weight_mask, weights, very_negative_mask)
+
+  # Force the invalid values to be 0.
+  values *= valid_mask.type(values.dtype)
+
+  return weights, values
+
+def resnet_fpn_backbone(
+    backbone_name,
+    pretrained,
+    norm_layer=misc_nn_ops.FrozenBatchNorm2d,
+    trainable_layers=3,
+    returned_layers=None,
+    extra_blocks=None
+):
+    # backbone = resnet.__dict__[backbone_name](
+    #     pretrained=pretrained,
+    #     norm_layer=norm_layer)
+    backbone = resnest50(pretrained)
+
+    # select layers that wont be frozen
+    assert trainable_layers <= 5 and trainable_layers >= 0
+    layers_to_train = ['layer4', 'layer3', 'layer2', 'layer1', 'conv1'][:trainable_layers]
+    # freeze layers only if pretrained backbone is used
+    for name, parameter in backbone.named_parameters():
+        if all([not name.startswith(layer) for layer in layers_to_train]):
+            parameter.requires_grad_(False)
+
+    if extra_blocks is None:
+        extra_blocks = LastLevelMaxPool()
+
+    if returned_layers is None:
+        returned_layers = [1, 2, 3, 4]
+    assert min(returned_layers) > 0 and max(returned_layers) < 5
+    return_layers = {f'layer{k}': str(v) for v, k in enumerate(returned_layers)}
+
+    in_channels_stage2 = backbone.inplanes // 8
+    in_channels_list = [in_channels_stage2 * 2 ** (i - 1) for i in returned_layers]
+    # out_channels = backbone.fc.in_features
+    out_channels = 256
+    return BackboneWithFPN(backbone, return_layers, in_channels_list, out_channels, extra_blocks=extra_blocks)
+
+class Context_FRCNN(nn.Module):
+
+  def __init__(self, backbone=None, num_classes=91, pretrained_backbone=True, trainable_backbone_layers=3,
+               attention_post_rpn=True, attention_post_box_classifier=False,
+               use_long_term_attention=True, use_self_attention=False, self_attention_in_sequence=False, 
+               num_attention_heads=1, num_attention_layers=1):
+    super(Context_FRCNN, self).__init__()
+    self.backbone = resnet_fpn_backbone(backbone, pretrained_backbone, trainable_layers=trainable_backbone_layers)
+    self.out_channels = self.backbone.out_channels
+    self.FasterRCNN = FasterRCNN(self.backbone, num_classes, rpn_post_nms_top_n_test=512) # change so same feats in train and eval
+
+    # Context RCNN parameters
+    self.attention_post_rpn = attention_post_rpn
+    self.attention_post_box_classifier = attention_post_box_classifier
+    self.max_num_proposals = 512
+    self.use_long_term_attention = use_long_term_attention
+    self.self_attention_in_sequence = self_attention_in_sequence
+    self.use_self_attention = use_self_attention
+    self.num_attention_heads = num_attention_heads
+    self.num_attention_layers = num_attention_layers
+
+    self._maxpool_layer = nn.MaxPool2d((1,1), stride=1)
+
+    # Attention Blocks
+    self.attention_bottleneck_dimension=self.out_channels + 4 # amount of context features
+    self.attention_temperature=0.2 # .01 ? .16 ? (.01 * sqrt of 256)
+    eps = 0.001
+    momentum = 0.03
+    self.queries_fc1 = nn.Sequential(
+        nn.Linear(self.out_channels, self.attention_bottleneck_dimension),
+        nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+        nn.ReLU()
+    )
+    self.keys_fc1 = nn.Sequential(
+        nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+        nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+        nn.ReLU()
+    )
+    self.values_fc1 = nn.Sequential(
+        nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+        nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+        nn.ReLU()
+    )
+    self.output_fc1 = nn.Sequential(
+        nn.Linear(self.attention_bottleneck_dimension, self.out_channels),
+        nn.BatchNorm1d(self.out_channels, eps=eps, momentum=momentum),
+        nn.ReLU()
+    )
+
+    if self.use_self_attention:
+      self.queries_fc2 = nn.Sequential(
+          nn.Linear(self.out_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.keys_fc2 = nn.Sequential(
+          nn.Linear(self.out_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.values_fc2 = nn.Sequential(
+          nn.Linear(self.out_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.output_fc2 = nn.Sequential(
+          nn.Linear(self.attention_bottleneck_dimension, self.out_channels),
+          nn.BatchNorm1d(self.out_channels, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+
+    if self.attention_post_box_classifier:
+      self.head_channels = 1024
+      self.queries_fc3 = nn.Sequential(
+          nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.keys_fc3 = nn.Sequential(
+          nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.values_fc3 = nn.Sequential(
+          nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.output_fc3 = nn.Sequential(
+          nn.Linear(self.attention_bottleneck_dimension, self.head_channels),
+          nn.BatchNorm1d(self.head_channels, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      
+      if self.use_self_attention:
+        self.queries_fc4 = nn.Sequential(
+            nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
+            nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+            nn.ReLU()
+        )
+        self.keys_fc4 = nn.Sequential(
+            nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
+            nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+            nn.ReLU()
+        )
+        self.values_fc4 = nn.Sequential(
+            nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
+            nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+            nn.ReLU()
+        )
+        self.output_fc4 = nn.Sequential(
+            nn.Linear(self.attention_bottleneck_dimension, self.head_channels),
+            nn.BatchNorm1d(self.head_channels, eps=eps, momentum=momentum),
+            nn.ReLU()
+        )
+      
+  def attention_block(self, input_features, context_features, output_dimension, 
+                      keys_values_valid_mask, queries_valid_mask=None, self_attention=False, block=1):
     
-    self.p1 = nn.AdaptiveAvgPool2d((1,1))
-    self.p2 = nn.AdaptiveMaxPool2d((1,1))
+    batch_size, _, num_features = input_features.shape
+    features = input_features.reshape((-1, num_features))
+    queries = getattr(self, f'queries_fc{block}')(features)
+    queries = queries.reshape((batch_size,-1,self.attention_bottleneck_dimension))
+    queries = F.normalize(queries,dim=0) # l2 norm
 
-  def forward(self, x):
-    x1 = self.p1(x)
-    x2 = self.p2(x)
-    return (x1+x2) * 0.5
+    batch_size, _, num_features = context_features.shape
+    features = context_features.reshape((-1, num_features))
+    keys = getattr(self, f'keys_fc{block}')(features)
+    keys = keys.reshape((batch_size,-1,self.attention_bottleneck_dimension))
+    keys = F.normalize(keys,dim=0) # l2 norm
 
-class Head(torch.nn.Module):
-  def __init__(self, in_f, out_f, dropout=True):
-    super(Head, self).__init__()
+    values = getattr(self, f'values_fc{block}')(features)
+    values = values.reshape((batch_size,-1,self.attention_bottleneck_dimension))
+    values = F.normalize(values,dim=0) # l2 norm
+
+    keys *= keys_values_valid_mask.unsqueeze(-1).type(keys.dtype)
+    queries *= queries_valid_mask.unsqueeze(-1).type(queries.dtype)
+
+    weights = torch.matmul(queries, torch.transpose(keys,1,2))
+
+    weights, values = filter_weight_value(weights, values, keys_values_valid_mask)
+
+    weights = F.softmax(weights / self.attention_temperature, dim=-1)
+
+    features = torch.matmul(weights, values)
+
+    batch_size, _, num_features = features.shape
+    features = features.reshape((-1, num_features))
+    output = getattr(self, f'output_fc{block}')(features)
+    output = output.reshape((batch_size,-1,output_dimension))
     
-    self.f = nn.Flatten()
-
-    self.l = nn.Linear(in_f, 512)
-    # self.m = Mish()
-    
-    self.d = nn.Dropout(0.5)
-    self.dropout = dropout
-
-    # self.o = nn.Linear(512, out_f)
-    self.o = nn.Linear(in_f, out_f)
-
-    self.b1 = nn.BatchNorm1d(in_f)
-    self.b2 = nn.BatchNorm1d(512)
-
-  def forward(self, x):
-    x = self.f(x)
-    # x = self.b1(x)
-    if self.dropout:
-      x = self.d(x)
-
-    # x = self.l(x)
-    # x = self.m(x)
-    # x = self.b2(x)
-    # x = self.d(x)
-
-    out = self.o(x)
-    return out
-
-class FCN(torch.nn.Module):
-  def __init__(self, base, in_f, classes=5, dropout=True):
-    super(FCN, self).__init__()
-    self.base = base
-    self.h1 = Head(in_f, classes, dropout=dropout)
+    return output
   
-  def forward(self, x):
-    x = self.base(x)
-    return self.h1(x)
+  def compute_box_context_attention(self, box_features, num_proposals, context_features, valid_context_size, block=1):
+    _, context_size, _ = context_features.shape
+    context_valid_mask = compute_valid_mask(valid_context_size, context_size)
 
-def load_model(name, checkpoint_path=None, pretrained=False):
-    model = get_model(name, pretrained=True)
-    # model = timm.create_model(name, pretrained=True)
-    try:
-      features = list(model.children())[-1].in_features
-    except:
-      features = list(model.children())[-1][-1].in_features
-    model = nn.Sequential(*list(model.children())[:-1])  # Remove original output layer
-    # model[0].final_pool = nn.Sequential(nn.AdaptiveAvgPool2d(1))
-    model[0].final_pool = nn.Sequential(GeM())
-    # model[-1] = nn.Sequential(GeM())
-    # model = nn.Sequential(*list(m.children())[:-2])
-    model = FCN(model, features, 6, dropout=True)
-
-    if checkpoint_path is not None:
-        model.load_state_dict(torch.load(checkpoint_path))
+    total_proposals, channels, height, width = box_features.shape
+    batch_size = total_proposals // self.max_num_proposals
     
-    return model
+    box_features = box_features.reshape((batch_size,self.max_num_proposals,channels,height,width))
+    box_features = torch.mean(box_features, (3, 4))
+    box_valid_mask = compute_valid_mask(num_proposals, box_features.shape[1])
+    
+    if self.use_self_attention:
+      self_attention_box_features = self.attention_block(
+          box_features, 
+          box_features, 
+          channels, 
+          keys_values_valid_mask=box_valid_mask,
+          queries_valid_mask=box_valid_mask,
+          self_attention=True,
+          block=block+1)
+
+    if self.use_long_term_attention:
+      if self.use_self_attention and self.self_attention_in_sequence:
+        input_features = torch.add(self_attention_box_features, box_features)
+        input_features = torch.divide(input_features, 2)
+      else:
+        input_features = box_features
+      original_input_features = input_features
+      for jdx in range(self.num_attention_layers):
+        layer_features = torch.zeros_like(input_features)
+        for idx in range(self.num_attention_heads):
+          attention_features = self.attention_block(
+              input_features,
+              context_features,
+              channels,
+              keys_values_valid_mask=context_valid_mask,
+              queries_valid_mask=box_valid_mask,
+              block=block)
+          layer_features = torch.add(layer_features, attention_features)
+        layer_features = torch.divide(layer_features, self.num_attention_heads)
+        input_features = torch.add(input_features, layer_features)
+      output_features = torch.add(input_features, original_input_features)
+      if not self.self_attention_in_sequence and self.use_self_attention:
+        output_features = torch.add(self_attention_box_features, output_features)
+    elif self.use_self_attention:
+      output_features = self_attention_box_features
+    else:
+      output_features = torch.zeros(box_features.shape)
+
+    # Expands the dimension back to match with the original feature map.
+    output_features = output_features.unsqueeze(-1).unsqueeze(-1)
+
+    return output_features
+
+  def compute_feature_maps(self, box_features, num_proposals, context_features, valid_context_size, block=1):
+
+    attention_features = self.compute_box_context_attention(box_features, num_proposals, context_features, valid_context_size, block)
+    bs, props, features, h, w = attention_features.shape
+    box_features += attention_features.reshape((bs*props, features, h, w))
+
+    return box_features
+
+  def forward(self, images, context_images, targets=None, context_targets=None):
+    original_image_sizes = torch.jit.annotate(List[Tuple[int, int]], [])
+    for img in images:
+      val = img.shape[-2:]
+      assert len(val) == 2
+      original_image_sizes.append((val[0], val[1]))
+    
+    # Get context features
+    context_features = []
+    valid_context_size = []
+    for i,imgs in enumerate(context_images):
+      context_features2 = []
+      valid_context_size2 = []
+
+      imgs, targets_ = self.FasterRCNN.transform(imgs, context_targets[i])
+      features = self.FasterRCNN.backbone(imgs.tensors)
+      props, prop_loss1 = self.FasterRCNN.rpn(imgs, features, targets_)
+
+      box_features, proposals, matched_idxs, labels, regression_targets = self.FasterRCNN.roi_heads(features, props, imgs.image_sizes, targets_)
+      _, feats, h, w = box_features.shape # proposals * frames x features x height x width
+      box_features = box_features.reshape((len(proposals), self.max_num_proposals, feats, h, w)) # frames x proposals x features x height x width
+
+      for j,box_feat in enumerate(box_features):
+        context_feats = []
+        for k,props in enumerate(proposals[j]):
+          bbox_feats = box_feat.mean((2,3))[k] # 1 x feats
+          prop_embed = embed_position_and_size(props) # 1 x 4
+          context_feats.append(torch.cat([bbox_feats, torch.tensor(prop_embed).cuda()]))
+        context_feats = torch.stack(context_feats) # num props x feats + prop
+        context_features2.append(context_feats)
+
+        valid_context_size2.append(context_feats.shape[0])
+      context_features.append(torch.stack(context_features2))
+      valid_context_size.append(torch.Tensor(valid_context_size2).type(torch.int32).sum())
+
+    context_features = torch.stack(context_features)
+    bs, frames, props, features = context_features.shape
+    context_features = context_features.reshape((bs, frames*props, features))
+    valid_context_size = torch.stack(valid_context_size).cuda()
+    
+    # Keyframe run with context
+    images, targets = self.FasterRCNN.transform(images, targets)
+    features = self.FasterRCNN.backbone(images.tensors)
+    props, prop_loss2 = self.FasterRCNN.rpn(images, features, targets)
+
+    box_features, proposals, matched_idxs, labels, regression_targets = self.FasterRCNN.roi_heads(features, props, images.image_sizes, targets)
+    num_proposals = torch.tensor(proposals[0].shape[0]).cuda().repeat(len(proposals))
+    if self.attention_post_rpn:
+      box_features = self._maxpool_layer(box_features)
+      box_features = self.compute_feature_maps(box_features, num_proposals, context_features, valid_context_size, block=1)
+
+    box_features = self.FasterRCNN.roi_heads.box_head(box_features)
+    if self.attention_post_box_classifier:
+      box_features = box_features.unsqueeze(-1).unsqueeze(-1)
+      box_features = self.compute_feature_maps(box_features, num_proposals, context_features, valid_context_size, block=3)
+
+    dets, det_loss = self.FasterRCNN.roi_heads.get_results(box_features, proposals, matched_idxs, labels, regression_targets, images.image_sizes)
+    dets = self.FasterRCNN.transform.postprocess(dets, images.image_sizes, original_image_sizes)
+
+    losses = {}
+    losses.update(prop_loss2)
+    losses.update(det_loss)
+    return dets, losses

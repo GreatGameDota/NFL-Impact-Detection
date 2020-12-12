@@ -1,1 +1,1 @@
-from .model_factory import load_model
+from .model_factory import Context_FRCNN
