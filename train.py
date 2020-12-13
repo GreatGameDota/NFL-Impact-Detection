@@ -239,6 +239,7 @@ def main():
         
         # Build Model
         model = Context_FRCNN('resnet50', num_classes=config.classes, use_long_term_attention=True,
+                      backbone_out_features=256, attention_features=2048,
                       attention_post_rpn=True, attention_post_box_classifier=False, 
                       use_self_attention=False, self_attention_in_sequence=False, 
                       num_attention_heads=1, num_attention_layers=1)
@@ -353,7 +354,11 @@ def main():
                 with open(log_name, 'a') as f:
                     f.write('\n')
         
-        model = Context_FRCNN('resnet50', num_classes=config.classes)
+        model = Context_FRCNN('resnet50', num_classes=config.classes, use_long_term_attention=True,
+                      backbone_out_features=256, attention_features=2048,
+                      attention_post_rpn=True, attention_post_box_classifier=False, 
+                      use_self_attention=False, self_attention_in_sequence=False, 
+                      num_attention_heads=1, num_attention_layers=1)
         model.load_state_dict(torch.load(f'frcnn-fld{fold+1}.pth'))
         model.cuda()
         kaggle = evaluate_model(model, val_loader, 0, scheduler=scheduler, history=history2, log_name=log_name)

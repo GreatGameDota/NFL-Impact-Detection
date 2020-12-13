@@ -13,7 +13,7 @@ from resnest.torch import resnest50
 from torchvision_modified.models.detection import FasterRCNN
 from torchvision_modified.models.detection.backbone_utils import BackboneWithFPN
 from torchvision_modified.ops import misc as misc_nn_ops
-from torchvision_modified.ops.feature_pyramid_network import LastLevelMaxPool
+from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
 from torchvision_modified.models import resnet
 
 def update_loss_dict(losses, new):
@@ -88,6 +88,7 @@ def filter_weight_value(weights, values, valid_mask):
 def resnet_fpn_backbone(
     backbone_name,
     pretrained,
+    backbone_out_features=None,
     norm_layer=misc_nn_ops.FrozenBatchNorm2d,
     trainable_layers=3,
     returned_layers=None,
@@ -117,18 +118,21 @@ def resnet_fpn_backbone(
 
     in_channels_stage2 = backbone.inplanes // 8
     in_channels_list = [in_channels_stage2 * 2 ** (i - 1) for i in returned_layers]
-    # out_channels = backbone.fc.in_features
-    out_channels = 256
+    if not backbone_out_features:
+      out_channels = backbone.fc.in_features
+    else:
+      out_channels = backbone_out_features
     return BackboneWithFPN(backbone, return_layers, in_channels_list, out_channels, extra_blocks=extra_blocks)
 
 class Context_FRCNN(nn.Module):
 
   def __init__(self, backbone=None, num_classes=91, pretrained_backbone=True, trainable_backbone_layers=3,
+               backbone_out_features=256, attention_features=256,
                attention_post_rpn=True, attention_post_box_classifier=False,
                use_long_term_attention=True, use_self_attention=False, self_attention_in_sequence=False, 
-               num_attention_heads=1, num_attention_layers=1):
+               num_attention_heads=1, num_attention_layers=1): # TODO: Dynamically create/call attention blocks based on specified head/layers
     super(Context_FRCNN, self).__init__()
-    backbone = resnet_fpn_backbone(backbone, pretrained_backbone, trainable_layers=trainable_backbone_layers)
+    backbone = resnet_fpn_backbone(backbone, pretrained_backbone, backbone_out_features, trainable_layers=trainable_backbone_layers)
     self.out_channels = backbone.out_channels
     self.FasterRCNN = FasterRCNN(backbone, num_classes, rpn_post_nms_top_n_test=512) # change so same feats in train and eval
 
@@ -146,7 +150,7 @@ class Context_FRCNN(nn.Module):
 
     # Attention Blocks
     self.context_feature_dimension = self.out_channels + 4 # amount of context features
-    self.attention_bottleneck_dimension = 2048
+    self.attention_bottleneck_dimension = attention_features
     self.softmax_temperature = 0.01
     # self.attention_temperature = self.softmax_temperature * math.sqrt(self.attention_bottleneck_dimension)
     self.attention_temperature = 0.2
