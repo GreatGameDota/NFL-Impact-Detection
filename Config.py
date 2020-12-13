@@ -1,7 +1,7 @@
 
 class config:
-    epochs = 10
-    batch_size = 4
+    epochs = 2
+    batch_size = 2
     input_H = 720
     input_W = 1280
     image_size = 512
