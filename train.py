@@ -61,20 +61,8 @@ def main():
 
     ###### LOAD DATA ######
 
-    # train_df2 = pd.read_csv('data/train_labels_impact_only.csv').fillna(0)
-
-    initial_labels = pd.read_csv('data/train_labels_expanded.csv').fillna(0)
-    # vid = initial_labels[initial_labels.video=='58098_001193_Endzone.mp4']
-    # idxs = vid[vid.frame==40].index
-    # for idx in idxs:
-    #     initial_labels.iloc[idx,10] = 0 # fix incorrect annotation
-
-    # vid = initial_labels[initial_labels.video=='57911_000147_Endzone.mp4']
-    # players = vid[vid.frame==113]
-    # player = players[players.label=='H21'].index
-    # initial_labels.iloc[player,10] = 0 # fix #2
-
-    # initial_labels.loc[(initial_labels.impact == 1) & (initial_labels.visibility == 0), 'impact'] = 0
+    train_df2 = pd.read_csv('data/train_labels_expanded.csv').fillna(0)
+    train_df2 = train_df2.drop(train_df2[train_df2.frame==0].index)
 
     # video_labels_with_impact = initial_labels[initial_labels['impact']>0]
     # for row in tqdm(video_labels_with_impact[['video','frame','label']].values):
@@ -84,8 +72,21 @@ def main():
     #                                 & (initial_labels['label'] == row[2]), 'impact'] = 1
     # initial_labels.to_csv('train_labels_expanded.csv', index=False)
 
+    initial_labels = pd.read_csv('data/train_labels.csv').fillna(0)
+    
+    vid = initial_labels[initial_labels.video=='58098_001193_Endzone.mp4']
+    idxs = vid[vid.frame==40].index
+    for idx in idxs:
+        initial_labels.iloc[idx,10] = 0 # fix incorrect annotation
+
+    vid = initial_labels[initial_labels.video=='57911_000147_Endzone.mp4']
+    players = vid[vid.frame==113]
+    player = players[players.label=='H21'].index
+    initial_labels.iloc[player,10] = 0 # fix #2
+
+    initial_labels.loc[(initial_labels.impact == 1) & (initial_labels.visibility == 0), 'impact'] = 0
+
     initial_labels = initial_labels.drop(initial_labels[initial_labels.frame==0].index)
-    train_df2 = initial_labels
 
     df = pd.DataFrame()
     df2 = pd.DataFrame()
@@ -216,7 +217,7 @@ def main():
             f.write('Train Fold %i\n\n'%(fold+1))
 
         train_dataset = ImageDataset(df, train_df2, config.IMAGE_PATH, folds=[i for i in folds if i != fold], transform=train_transform)
-        val_dataset = ImageDataset(df, train_df2, config.IMAGE_PATH, folds=[fold], transform=val_transform, mode='val')
+        val_dataset = ImageDataset(df2, initial_labels, config.IMAGE_PATH, folds=[fold], transform=val_transform, mode='val')
         
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
