@@ -13,7 +13,7 @@ from resnest.torch import resnest50
 from torchvision_modified.models.detection import FasterRCNN
 from torchvision_modified.models.detection.backbone_utils import BackboneWithFPN
 from torchvision_modified.ops import misc as misc_nn_ops
-from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
+from torchvision_modified.ops.feature_pyramid_network import LastLevelMaxPool
 from torchvision_modified.models import resnet
 
 def update_loss_dict(losses, new):
