@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import math
 
 import torch
 import torch.nn as nn
@@ -55,7 +56,7 @@ def compute_valid_mask(num_valid_elements, num_elements):
     batch_size = num_valid_elements.shape[0]
     element_idxs = torch.arange(0, num_elements, dtype=torch.int32)
     # batch_element_idxs = torch.tile(element_idxs.unsqueeze(0), (batch_size, 1))
-    batch_element_idxs = element_idxs.repeat(batch_size).reshape(batch_size,-1).cuda()
+    batch_element_idxs = element_idxs.repeat(batch_size).reshape(batch_size,-1).to(num_valid_elements.device)
     num_valid_elements = num_valid_elements.unsqueeze(-1)
     valid_mask = torch.less(batch_element_idxs, num_valid_elements)
     return valid_mask
@@ -73,7 +74,7 @@ def filter_weight_value(weights, values, valid_mask):
   # weight = torch.logical_not(valid_mask).type(weights.dtype) * _NEGATIVE_PADDING_VALUE
   # weights += torch.transpose(weight, 1, 2)
 
-  very_negative_mask = torch.ones(weights.shape, dtype=weights.dtype).cuda() * _NEGATIVE_PADDING_VALUE
+  very_negative_mask = torch.ones(weights.shape, dtype=weights.dtype).to(weights.device) * _NEGATIVE_PADDING_VALUE
   # valid_weight_mask = torch.tile(torch.transpose(valid_mask, 1, 2),
   #                             (1, weights.shape[1], 1))
   valid_weight_mask = torch.transpose(valid_mask, 1, 2).repeat(1,weights.shape[1],1)
@@ -144,8 +145,12 @@ class Context_FRCNN(nn.Module):
     self.num_attention_layers = num_attention_layers
 
     # Attention Blocks
-    self.attention_bottleneck_dimension=self.out_channels + 4 # amount of context features
-    self.attention_temperature=0.2 # .01 ? .16 ? (.01 * sqrt of 256)
+    self.context_feature_dimension = self.out_channels + 4 # amount of context features
+    self.attention_bottleneck_dimension = 2048
+    self.softmax_temperature = 0.01
+    # self.attention_temperature = self.softmax_temperature * math.sqrt(self.attention_bottleneck_dimension)
+    self.attention_temperature = 0.2
+    
     eps = 0.001
     momentum = 0.03
     self.queries_fc1 = nn.Sequential(
@@ -154,12 +159,12 @@ class Context_FRCNN(nn.Module):
         nn.ReLU()
     )
     self.keys_fc1 = nn.Sequential(
-        nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+        nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
         nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
         nn.ReLU()
     )
     self.values_fc1 = nn.Sequential(
-        nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+        nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
         nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
         nn.ReLU()
     )
@@ -199,12 +204,12 @@ class Context_FRCNN(nn.Module):
           nn.ReLU()
       )
       self.keys_fc3 = nn.Sequential(
-          nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+          nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
           nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
           nn.ReLU()
       )
       self.values_fc3 = nn.Sequential(
-          nn.Linear(self.attention_bottleneck_dimension, self.attention_bottleneck_dimension),
+          nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
           nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
           nn.ReLU()
       )
@@ -362,7 +367,7 @@ class Context_FRCNN(nn.Module):
         for k,props in enumerate(proposals[j]):
           bbox_feats = box_feat.mean((2,3))[k] # 1 x feats
           prop_embed = embed_position_and_size(props) # 1 x 4
-          context_feats.append(torch.cat([bbox_feats, torch.tensor(prop_embed).cuda()]))
+          context_feats.append(torch.cat([bbox_feats, torch.tensor(prop_embed).to(images.device)]))
         context_feats = torch.stack(context_feats) # num props x feats + prop
         context_features2.append(context_feats)
 
@@ -373,7 +378,7 @@ class Context_FRCNN(nn.Module):
     context_features = torch.stack(context_features)
     bs, frames, props, features = context_features.shape
     context_features = context_features.reshape((bs, frames*props, features))
-    valid_context_size = torch.stack(valid_context_size).cuda()
+    valid_context_size = torch.stack(valid_context_size).to(images.device)
     
     # Keyframe run with context
     images, targets = self.FasterRCNN.transform(images, targets)
@@ -381,7 +386,7 @@ class Context_FRCNN(nn.Module):
     props, prop_loss2 = self.FasterRCNN.rpn(images, features, targets)
 
     box_features, proposals, matched_idxs, labels, regression_targets = self.FasterRCNN.roi_heads(features, props, images.image_sizes, targets)
-    num_proposals = torch.tensor(proposals[0].shape[0]).cuda().repeat(len(proposals))
+    num_proposals = torch.tensor(proposals[0].shape[0]).to(box_features.device).repeat(len(proposals))
     if self.attention_post_rpn:
       box_features = self._maxpool_layer(box_features)
       box_features = self.compute_feature_maps(box_features, num_proposals, context_features, valid_context_size, block=1)
