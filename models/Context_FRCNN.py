@@ -58,7 +58,7 @@ def compute_valid_mask(num_valid_elements, num_elements):
     # batch_element_idxs = torch.tile(element_idxs.unsqueeze(0), (batch_size, 1))
     batch_element_idxs = element_idxs.repeat(batch_size).reshape(batch_size,-1).to(num_valid_elements.device)
     num_valid_elements = num_valid_elements.unsqueeze(-1)
-    valid_mask = torch.less(batch_element_idxs, num_valid_elements)
+    valid_mask = torch.lt(batch_element_idxs, num_valid_elements) # less
     return valid_mask
 
 _NEGATIVE_PADDING_VALUE = -100000
@@ -321,7 +321,7 @@ class Context_FRCNN(nn.Module):
               queries_valid_mask=box_valid_mask,
               block=block)
           layer_features = torch.add(layer_features, attention_features)
-        layer_features = torch.divide(layer_features, self.num_attention_heads)
+        layer_features = torch.div(layer_features, self.num_attention_heads)
         input_features = torch.add(input_features, layer_features)
       output_features = torch.add(input_features, original_input_features)
       if not self.self_attention_in_sequence and self.use_self_attention:
