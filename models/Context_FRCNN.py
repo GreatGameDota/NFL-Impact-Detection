@@ -352,40 +352,41 @@ class Context_FRCNN(nn.Module):
       original_image_sizes.append((val[0], val[1]))
     
     # Get context features
-    context_features = []
-    valid_context_size = []
-    for i,imgs in enumerate(context_images):
-      context_features2 = []
-      valid_context_size2 = []
+    if self.use_long_term_attention:
+      context_features = []
+      valid_context_size = []
+      for i,imgs in enumerate(context_images):
+        context_features2 = []
+        valid_context_size2 = []
 
-      if context_targets:
-        imgs, targets_ = self.FasterRCNN.transform(imgs, context_targets[i])
-      else:
-        imgs, targets_ = self.FasterRCNN.transform(imgs, None)
-      features = self.FasterRCNN.backbone(imgs.tensors)
-      props, prop_loss1 = self.FasterRCNN.rpn(imgs, features, targets_)
+        if context_targets:
+          imgs, targets_ = self.FasterRCNN.transform(imgs, context_targets[i])
+        else:
+          imgs, targets_ = self.FasterRCNN.transform(imgs, None)
+        features = self.FasterRCNN.backbone(imgs.tensors)
+        props, prop_loss1 = self.FasterRCNN.rpn(imgs, features, targets_)
 
-      box_features, proposals, matched_idxs, labels, regression_targets = self.FasterRCNN.roi_heads(features, props, imgs.image_sizes, targets_)
-      _, feats, h, w = box_features.shape # proposals * frames x features x height x width
-      box_features = box_features.reshape((len(proposals), self.max_num_proposals, feats, h, w)) # frames x proposals x features x height x width
+        box_features, proposals, matched_idxs, labels, regression_targets = self.FasterRCNN.roi_heads(features, props, imgs.image_sizes, targets_)
+        _, feats, h, w = box_features.shape # proposals * frames x features x height x width
+        box_features = box_features.reshape((len(proposals), self.max_num_proposals, feats, h, w)) # frames x proposals x features x height x width
 
-      for j,box_feat in enumerate(box_features):
-        context_feats = []
-        for k,props in enumerate(proposals[j]):
-          bbox_feats = box_feat.mean((2,3))[k] # 1 x feats
-          prop_embed = embed_position_and_size(props) # 1 x 4
-          context_feats.append(torch.cat([bbox_feats, torch.tensor(prop_embed).to(images.device)]))
-        context_feats = torch.stack(context_feats) # num props x feats + prop
-        context_features2.append(context_feats)
+        for j,box_feat in enumerate(box_features):
+          context_feats = []
+          for k,props in enumerate(proposals[j]):
+            bbox_feats = box_feat.mean((2,3))[k] # 1 x feats
+            prop_embed = embed_position_and_size(props) # 1 x 4
+            context_feats.append(torch.cat([bbox_feats, torch.tensor(prop_embed).to(images.device)]))
+          context_feats = torch.stack(context_feats) # num props x feats + prop
+          context_features2.append(context_feats)
 
-        valid_context_size2.append(context_feats.shape[0])
-      context_features.append(torch.stack(context_features2))
-      valid_context_size.append(torch.Tensor(valid_context_size2).type(torch.int32).sum())
+          valid_context_size2.append(context_feats.shape[0])
+        context_features.append(torch.stack(context_features2))
+        valid_context_size.append(torch.Tensor(valid_context_size2).type(torch.int32).sum())
 
-    context_features = torch.stack(context_features)
-    bs, frames, props, features = context_features.shape
-    context_features = context_features.reshape((bs, frames*props, features))
-    valid_context_size = torch.stack(valid_context_size).to(images.device)
+      context_features = torch.stack(context_features)
+      bs, frames, props, features = context_features.shape
+      context_features = context_features.reshape((bs, frames*props, features))
+      valid_context_size = torch.stack(valid_context_size).to(images.device)
     
     # Keyframe run with context
     images, targets = self.FasterRCNN.transform(images, targets)
@@ -394,12 +395,12 @@ class Context_FRCNN(nn.Module):
 
     box_features, proposals, matched_idxs, labels, regression_targets = self.FasterRCNN.roi_heads(features, props, images.image_sizes, targets)
     num_proposals = torch.tensor(proposals[0].shape[0]).to(box_features.device).repeat(len(proposals))
-    if self.attention_post_rpn:
+    if self.use_long_term_attention and self.attention_post_rpn:
       box_features = self._maxpool_layer(box_features)
       box_features = self.compute_feature_maps(box_features, num_proposals, context_features, valid_context_size, block=1)
 
     box_features = self.FasterRCNN.roi_heads.box_head(box_features)
-    if self.attention_post_box_classifier:
+    if self.use_long_term_attention and self.attention_post_box_classifier:
       box_features = box_features.unsqueeze(-1).unsqueeze(-1)
       box_features = self.compute_feature_maps(box_features, num_proposals, context_features, valid_context_size, block=3)
 
