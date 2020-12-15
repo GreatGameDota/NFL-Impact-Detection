@@ -16,12 +16,6 @@ from torchvision_modified.ops import misc as misc_nn_ops
 from torchvision_modified.models import resnet
 from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
 
-def update_loss_dict(losses, new):
-  keys = list(losses.keys())
-  sums = [i+list(new.values())[j] for j,i in enumerate(list(losses.values()))]
-  loss = {k: v for k,v in zip(keys,sums)}
-  return loss
-
 def embed_position_and_size(box):
   """Encodes the bounding box of the object of interest.
 
@@ -84,6 +78,13 @@ def filter_weight_value(weights, values, valid_mask):
   values *= valid_mask.type(values.dtype)
 
   return weights, values
+
+def project_features(features, projection_dimension, eps=.001, momentum=.03):
+    return nn.Sequential(
+        nn.Linear(features, projection_dimension),
+        nn.BatchNorm1d(projection_dimension, eps=eps, momentum=momentum),
+        nn.ReLU()
+    )
 
 def resnet_fpn_backbone(
     backbone_name,
