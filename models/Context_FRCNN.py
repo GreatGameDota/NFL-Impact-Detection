@@ -157,28 +157,29 @@ class Context_FRCNN(nn.Module):
     
     eps = 0.001
     momentum = 0.03
-    self.queries_fc1 = nn.Sequential(
-        nn.Linear(self.out_channels, self.attention_bottleneck_dimension),
-        nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
-        nn.ReLU()
-    )
-    self.keys_fc1 = nn.Sequential(
-        nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
-        nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
-        nn.ReLU()
-    )
-    self.values_fc1 = nn.Sequential(
-        nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
-        nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
-        nn.ReLU()
-    )
-    self.output_fc1 = nn.Sequential(
-        nn.Linear(self.attention_bottleneck_dimension, self.out_channels),
-        nn.BatchNorm1d(self.out_channels, eps=eps, momentum=momentum),
-        nn.ReLU()
-    )
+    if self.use_long_term_attention and self.attention_post_rpn:
+      self.queries_fc1 = nn.Sequential(
+          nn.Linear(self.out_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.keys_fc1 = nn.Sequential(
+          nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.values_fc1 = nn.Sequential(
+          nn.Linear(self.context_feature_dimension, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.output_fc1 = nn.Sequential(
+          nn.Linear(self.attention_bottleneck_dimension, self.out_channels),
+          nn.BatchNorm1d(self.out_channels, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
 
-    if self.use_self_attention:
+    if self.attention_post_rpn and self.use_self_attention:
       self.queries_fc2 = nn.Sequential(
           nn.Linear(self.out_channels, self.attention_bottleneck_dimension),
           nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
@@ -200,7 +201,7 @@ class Context_FRCNN(nn.Module):
           nn.ReLU()
       )
 
-    if self.attention_post_box_classifier:
+    if self.use_long_term_attention and self.attention_post_box_classifier:
       self.head_channels = 1024
       self.queries_fc3 = nn.Sequential(
           nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
@@ -223,27 +224,27 @@ class Context_FRCNN(nn.Module):
           nn.ReLU()
       )
       
-      if self.use_self_attention:
-        self.queries_fc4 = nn.Sequential(
-            nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
-            nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
-            nn.ReLU()
-        )
-        self.keys_fc4 = nn.Sequential(
-            nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
-            nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
-            nn.ReLU()
-        )
-        self.values_fc4 = nn.Sequential(
-            nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
-            nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
-            nn.ReLU()
-        )
-        self.output_fc4 = nn.Sequential(
-            nn.Linear(self.attention_bottleneck_dimension, self.head_channels),
-            nn.BatchNorm1d(self.head_channels, eps=eps, momentum=momentum),
-            nn.ReLU()
-        )
+    if self.attention_post_box_classifier and self.use_self_attention:
+      self.queries_fc4 = nn.Sequential(
+          nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.keys_fc4 = nn.Sequential(
+          nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.values_fc4 = nn.Sequential(
+          nn.Linear(self.head_channels, self.attention_bottleneck_dimension),
+          nn.BatchNorm1d(self.attention_bottleneck_dimension, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
+      self.output_fc4 = nn.Sequential(
+          nn.Linear(self.attention_bottleneck_dimension, self.head_channels),
+          nn.BatchNorm1d(self.head_channels, eps=eps, momentum=momentum),
+          nn.ReLU()
+      )
       
   def attention_block(self, input_features, context_features, output_dimension, 
                       keys_values_valid_mask, queries_valid_mask=None, self_attention=False, block=1):
