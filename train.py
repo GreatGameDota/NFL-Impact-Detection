@@ -206,7 +206,7 @@ def main():
 
     folds = [0, 1, 2, 3, 4]
     
-    log_name = f"logs/log-{len(os.listdir('logs/'))}.log"
+    log_name = f"../drive/My Drive/logs/log-{len(os.listdir('../drive/My Drive/logs/'))+1}.log"
 
     # Loop over folds
     for fld in range(1):
@@ -348,21 +348,12 @@ def main():
                 print(f'Saving best model... (metric)')
                 torch.save({
                     'model_state': model.state_dict(),
-                }, f'frcnn-fld{fold+1}.pth')
+                }, f'../drive/My Drive/Models/frcnn-fld{fold+1}.pth')
                 with open(log_name, 'a') as f:
                     f.write('Saving Best model...\n\n')
             else:
                 with open(log_name, 'a') as f:
                     f.write('\n')
-        
-        model = Context_FRCNN('resnet50', num_classes=config.classes, use_long_term_attention=True,
-                      backbone_out_features=256, attention_features=2048,
-                      attention_post_rpn=True, attention_post_box_classifier=False, 
-                      use_self_attention=False, self_attention_in_sequence=False, 
-                      num_attention_heads=1, num_attention_layers=1)
-        model.load_state_dict(torch.load(f'frcnn-fld{fold+1}.pth')['model_state'])
-        model.cuda()
-        kaggle = evaluate_model(model, val_loader, 0, scheduler=scheduler, history=history2, log_name=log_name)
 
 if __name__ == '__main__':
     main()
