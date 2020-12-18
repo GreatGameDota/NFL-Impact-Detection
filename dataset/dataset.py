@@ -8,13 +8,14 @@ import numpy as np
 import pandas as pd
 
 class ImageDataset(Dataset):
-  def __init__(self, df, train_df, root_dir, folds, transform=None, mode='train'):
+  def __init__(self, df, train_df, root_dir, folds, frames, transform=None, mode='train'):
     self.df = df[df.fold.isin(folds).reset_index(drop=True)].reset_index(drop=True)
     self.train_df = train_df
     self.root_dir = root_dir
     self.folds = folds
     self.transform = transform
     self.mode = mode
+    self.frames = frames
 
     self.videos = self.df.video.unique()
   
@@ -41,10 +42,10 @@ class ImageDataset(Dataset):
 
     labels = data3['impact'].values
 
-    idxs = np.array([-1,1])
-    frames = frame + idxs
+    # idxs = np.array([-2,2])
+    frames = frame + self.frames
     # frames = [-1,frames[0]]
-    total_frames = len(self.df[self.df.video==video_name].frame.values) + 2 # first and last frames
+    total_frames = len(self.df[self.df.video==video_name].frame.values) + self.frames[-1]*2 # first and last frames
     imgs2 = []
     labels2 = []
     boxes4 = []

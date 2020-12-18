@@ -95,11 +95,11 @@ def main():
     for id in paths:
         df_ = train_df2[train_df2['video']==id+'.mp4']
         df_ = df_.drop_duplicates(subset='frame', keep='first').reset_index(drop=True)
-        df = df.append(df_[1:-1]).reset_index(drop=True) # remove first and last frames
+        df = df.append(df_[config.max_frame:-config.max_frame]).reset_index(drop=True) # remove first and last frames
 
         df_ = initial_labels[initial_labels['video']==id+'.mp4']
         df_ = df_.drop_duplicates(subset='frame', keep='first').reset_index(drop=True)
-        df2 = df2.append(df_[1:-1]).reset_index(drop=True)
+        df2 = df2.append(df_[config.max_frame:-config.max_frame]).reset_index(drop=True)
 
     video_ids = []
     for id in df.video.values:
@@ -216,8 +216,8 @@ def main():
         with open(log_name, 'a') as f:
             f.write('Train Fold %i\n\n'%(fold+1))
 
-        train_dataset = ImageDataset(df, train_df2, config.IMAGE_PATH, folds=[i for i in folds if i != fold], transform=train_transform)
-        val_dataset = ImageDataset(df2, initial_labels, config.IMAGE_PATH, folds=[fold], transform=val_transform, mode='val')
+        train_dataset = ImageDataset(df, train_df2, config.IMAGE_PATH, folds=[i for i in folds if i != fold], frames=config.frame_idxs, transform=train_transform)
+        val_dataset = ImageDataset(df2, initial_labels, config.IMAGE_PATH, folds=[fold], frames=config.frame_idxs, transform=val_transform, mode='val')
         
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -240,7 +240,7 @@ def main():
         
         # Build Model
         model = Context_FRCNN('resnet50', num_classes=config.classes, use_long_term_attention=True,
-                      backbone_out_features=256, attention_features=2048,
+                      backbone_out_features=256, attention_features=256,
                       attention_post_rpn=True, attention_post_box_classifier=False, 
                       use_self_attention=False, self_attention_in_sequence=False, 
                       num_attention_heads=1, num_attention_layers=1)

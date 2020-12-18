@@ -1,3 +1,4 @@
+import numpy as np
 
 class config:
     epochs = 2
@@ -6,6 +7,8 @@ class config:
     input_W = 1280
     image_size = 512
     classes = 3
+    frame_idxs = np.array([-1,1])
+    max_frame = frame_idxs[-1]
     IMAGE_PATH = 'data/images/'
     TEST_PATH = 'test/'
     # lr = 1e-4
