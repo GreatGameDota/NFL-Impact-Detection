@@ -137,7 +137,15 @@ def main():
     #################
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    
+    additional_targets_dict = {}
+    label_list = ['labels']
+    for i in range(len(config.frame_idxs)):
+        additional_targets_dict['image'+str(i+1)] = 'image'
+        additional_targets_dict['bboxes'+str(i+1)] = 'bboxes'
+        additional_targets_dict['labels'+str(i+1)] = f'labels{i+1}'
+        label_list.append(f'labels{i+1}')
+    
     train_transform = A.Compose([
                                 #  A.RandomSizedCrop(min_max_height=(600, 600), height=config.image_size, width=config.image_size, p=0.5),
                                 A.OneOf([
@@ -162,22 +170,8 @@ def main():
                 format='pascal_voc',
                 min_area=0,
                 min_visibility=0,
-                label_fields=['labels','labels1','labels2']
-    ),additional_targets={
-            'image1': 'image',
-            'bboxes1': 'bboxes',
-            'labels1': 'labels1',
-            'image2': 'image',
-            'bboxes2': 'bboxes',
-            'labels2': 'labels2',
-
-            # 'image3': 'image',
-            # 'bboxes3': 'bboxes',
-            # 'labels3': 'labels',
-            # 'image4': 'image',
-            # 'bboxes4': 'bboxes',
-            # 'labels4': 'labels'
-    })
+                label_fields=label_list
+    ),additional_targets=additional_targets_dict)
 
     val_transform = A.Compose([
                                 A.Resize(config.image_size,config.image_size,p=1),
@@ -187,22 +181,8 @@ def main():
                 format='pascal_voc',
                 min_area=0,
                 min_visibility=0,
-                label_fields=['labels','labels1','labels2']
-    ),additional_targets={
-            'image1': 'image',
-            'bboxes1': 'bboxes',
-            'labels1': 'labels1',
-            'image2': 'image',
-            'bboxes2': 'bboxes',
-            'labels2': 'labels2',
-
-            # 'image3': 'image',
-            # 'bboxes3': 'bboxes',
-            # 'labels3': 'labels',
-            # 'image4': 'image',
-            # 'bboxes4': 'bboxes',
-            # 'labels4': 'labels'
-    })
+                label_fields=label_list
+    ),additional_targets=additional_targets_dict)
 
     folds = [0, 1, 2, 3, 4]
     
