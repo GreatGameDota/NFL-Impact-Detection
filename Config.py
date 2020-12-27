@@ -7,12 +7,12 @@ class config:
     input_W = 1280
     image_size = 512
     classes = 3
-    frame_idxs = np.array([-1,1])
+    frame_idxs = np.array([-4,4])
     max_frame = frame_idxs[-1]
     IMAGE_PATH = 'data/images/'
     TEST_PATH = 'test/'
     # lr = 1e-4
-    lr = 0.0002
+    lr = 0.0005
     # lr = 0.003
     # lr = 3e-4
     mean = [0.485, 0.456, 0.406],

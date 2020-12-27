@@ -226,6 +226,17 @@ def main():
                       num_attention_heads=1, num_attention_layers=1)
         model = model.cuda()
 
+        context_model = None
+        # context_model = Context_FRCNN('resnet50', num_classes=config.classes, use_long_term_attention=True,
+        #               return_context_feats=True,
+        #               backbone_out_features=256, attention_features=256,
+        #               attention_post_rpn=False, attention_post_box_classifier=False, 
+        #               use_self_attention=False, self_attention_in_sequence=False, 
+        #               num_attention_heads=1, num_attention_layers=1)
+        # context_model.load_state_dict(torch.load('../drive/My Drive/Models/pretrained/frcnn-fld1 single.pth')['model_state'])
+        # context_model.cuda()
+        # context_model.eval()
+
         # Optimizer
         optimizer = get_optimizer(model, lr=config.lr)
 
@@ -280,6 +291,9 @@ def main():
                     targets3.append(targets2_)
                 targets2 = targets3
                 
+                if context_model is not None:
+                    context_feats, valid_size = context_model(context_images=img_batch2)
+
                 rand = np.random.rand()
                 if rand < config.mixup:
                     pass
@@ -288,9 +302,11 @@ def main():
                 else:
                     if config.scale:
                         with amp.autocast():
-                            _, loss_dict = model(img_batch1, img_batch2, targets1, targets2)
+                            _, loss_dict = model(img_batch1, img_batch2, targets1, context_targets=targets2)
+                            # _, loss_dict = model(img_batch1, context_features=context_feats, valid_context_size=valid_size, targets=targets1)
                     else:
-                        _, loss_dict = model(img_batch1, img_batch2, targets1, targets2)
+                        _, loss_dict = model(img_batch1, img_batch2, targets1, context_targets=targets2)
+                        # _, loss_dict = model(img_batch1, context_features=context_feats, valid_context_size=valid_size, targets=targets1)
                 loss = sum(loss for loss in loss_dict.values())/ config.accumulation_steps
 
                 total_loss += loss.data.cpu().numpy() * config.accumulation_steps

@@ -40,7 +40,9 @@ def evaluate_model(model, val_loader, epoch, scheduler=None, history=None, log_n
               targets3.append(targets2_)
             targets2 = targets3
 
-            dets, _ = model(img_batch1, img_batch2, targets1, targets2)
+            dets, _ = model(img_batch1, img_batch2, targets1, context_targets=targets2)
+            # context_feats, valid_size = context_model(context_images=img_batch2)
+            # dets, _ = model(img_batch1, context_features=context_feats, valid_context_size=valid_size, targets=targets1)
             
             for k,dets in enumerate(dets):
               boxes = []
