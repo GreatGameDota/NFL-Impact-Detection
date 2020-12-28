@@ -3,7 +3,7 @@ from tqdm import tqdm,trange
 import torch
 from Config import config
 
-def evaluate_model(model, val_loader, epoch, scheduler=None, history=None, log_name=None):
+def evaluate_model(model, val_loader, epoch, scheduler=None, history=None, log_name=None, context_model=None):
     model.eval()
     metric_ = 0.
     

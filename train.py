@@ -337,7 +337,7 @@ def main():
 
             #### VALIDATION ####
 
-            kaggle = evaluate_model(model, val_loader, epoch, scheduler=scheduler, history=history2, log_name=log_name)
+            kaggle = evaluate_model(model, val_loader, epoch, scheduler=scheduler, history=history2, log_name=log_name, context_model=context_model)
             
             if kaggle > best:
                 best = kaggle
